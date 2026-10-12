@@ -221,6 +221,40 @@ export async function patchMemory(page, writes) {
   await sleep(500); // RetroArch can't save another state right after loading one
 }
 
+// Edits the website's status block in EWRAM (sStatus in src/dailyred.c).
+// This lets site tests drive the browser-side polling logic without waiting
+// for a whole battle to resolve naturally.
+export async function forceWebsiteResult(page, { phase, result }) {
+  await page.evaluate(async ({ phase, result }) => {
+    const { state } = await window.emu.saveState();
+    const buf = new Uint8Array(await state.arrayBuffer());
+    let mem = 0;
+    if (String.fromCharCode(...buf.subarray(0, 7)) === 'RASTATE') {
+      for (let pos = 8; pos + 8 <= buf.length;) {
+        const id = String.fromCharCode(...buf.subarray(pos, pos + 4));
+        const size = new DataView(buf.buffer).getUint32(pos + 4, true);
+        if (id === 'MEM ') { mem = pos + 8; break; }
+        pos += 8 + size + ((8 - (size % 8)) % 8);
+      }
+    }
+    const ewram = buf.subarray(mem + 0x21000, mem + 0x21000 + 0x40000);
+    const magic = 'DAILYRED-STATUS1';
+    let at = -1;
+    outer: for (let i = 0; i <= ewram.length - magic.length; i++) {
+      for (let j = 0; j < magic.length; j++) {
+        if (ewram[i + j] !== magic.charCodeAt(j)) continue outer;
+      }
+      at = i;
+      break;
+    }
+    if (at < 0) throw new Error('could not find Daily Red status block in EWRAM');
+    ewram[at + 20] = phase;
+    ewram[at + 21] = result;
+    await window.emu.loadState(new Blob([buf]));
+  }, { phase, result });
+  await sleep(500);
+}
+
 export const u16 = (n) => [n & 0xFF, (n >> 8) & 0xFF];
 
 // Reads a script variable (VAR_xxxx) from SaveBlock1.

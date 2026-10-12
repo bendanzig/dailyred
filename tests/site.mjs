@@ -4,7 +4,7 @@
 // screen. Screenshots go to tests/output/site-*.png.
 import { mkdirSync } from 'node:fs';
 import {
-  startServer, launchBrowser, sleep, press, getStatus, waitFor, startRedBattle, forceWin, forceLoss,
+  startServer, launchBrowser, sleep, press, getStatus, waitFor, startRedBattle, forceWin, forceLoss, forceWebsiteResult,
 } from './lib.mjs';
 import { readParty } from './party.mjs';
 
@@ -22,14 +22,18 @@ const at = (date, time = '10:00:00') => new Date(`${date}T${time}`);
 
 const state = (page) => page.evaluate(() => document.querySelector('.app').dataset.state);
 const saved = (page) => page.evaluate(() => JSON.parse(localStorage.getItem('dailyred-stats') || 'null'));
+const savedInfinite = (page) => page.evaluate(() => JSON.parse(localStorage.getItem('dailyred-infinite-stats') || 'null'));
 const shown = (page) => page.evaluate(() => ({
   wins: document.getElementById('stat-wins').textContent,
   losses: document.getElementById('stat-losses').textContent,
   winStreak: document.getElementById('stat-win-streak').textContent,
   dayStreak: document.getElementById('stat-day-streak').textContent,
   canPlay: !document.getElementById('play').hidden,
+  playText: document.getElementById('play').textContent,
   played: document.getElementById('played').hidden ? null : document.getElementById('played-result').textContent,
   next: document.getElementById('played-next').textContent,
+  retryToday: !document.getElementById('retry-today').hidden,
+  note: document.getElementById('practice-note').hidden ? '' : document.getElementById('practice-note').textContent,
 }));
 const statLine = (s) => `${s.wins}W ${s.losses}L, win streak ${s.winStreak}, day streak ${s.dayStreak}`;
 
@@ -42,7 +46,7 @@ async function attach(page) {
 
 // Presses A through the end of the battle and the closing messages until the
 // site has closed the game and is back on the title card.
-async function finishDailyGame(page, shotPrefix) {
+async function finishToTitle(page, shotPrefix) {
   for (let i = 0; i < 120; i++) {
     if ((await state(page)) === 'title') return true;
     if (shotPrefix && i % 3 === 0) await page.locator('canvas').first().screenshot({ path: `${OUT}/${shotPrefix}-${String(i).padStart(3, '0')}.png` }).catch(() => {});
@@ -89,7 +93,7 @@ try {
   await sleep(1000);
   check((await saved(page))?.pending === DAY1, 'once the battle starts, today counts as played');
   await forceWin(page);
-  check(await finishDailyGame(page, 'site-win'), 'after a win the site closes the game and returns to the title card');
+  check(await finishToTitle(page, 'site-win'), 'after a win the site closes the game and returns to the title card');
   s = await shown(page);
   check(s.wins === '1' && s.losses === '0' && s.winStreak === '1' && s.dayStreak === '1', `win recorded (${statLine(s)})`);
   check(!s.canPlay && s.played === 'You beat RED today!' && /^Next battle in \d\d:\d\d:\d\d$/.test(s.next), `no Play button; shows "${s.played}" / "${s.next}"`);
@@ -122,22 +126,44 @@ try {
   check(team2 !== team1, "a new day brings a new team");
   await startRedBattle(page);
   await forceLoss(page);
-  check(await finishDailyGame(page, 'site-loss'), 'after a loss the site closes the game and returns to the title card');
+  check(await finishToTitle(page, 'site-loss'), 'after a loss the site closes the game and returns to the title card');
   s = await shown(page);
   check(s.wins === '1' && s.losses === '1' && s.winStreak === '0' && s.dayStreak === '2', `loss recorded (${statLine(s)})`);
   check(s.played === 'RED won today.', `shows "${s.played}"`);
+  check(s.retryToday, 'after a daily loss, Retry today is shown on the title card');
+  const team2Retry = team2;
 
-  // Day 3: leave in the middle of the battle -> counts as a loss.
+  // A retry uses the same daily team but does not change the locked daily stats.
+  await page.click('#retry-today');
+  await attach(page);
+  check((await page.evaluate(() => window.dailyRed.run?.kind)) === 'retry', 'retry launches a practice rematch');
+  check(JSON.stringify(readParty((await getStatus(page)).mem).party.map((m) => m.species)) === team2Retry, 'retry reuses the same daily team');
+  await startRedBattle(page);
+  await forceWin(page);
+  check(await finishToTitle(page, 'site-retry-win'), 'retry ends and returns to the title card');
+  s = await shown(page);
+  check(s.wins === '1' && s.losses === '1' && s.retryToday, 'retry practice does not change the official daily stats');
+
+  // Day 3: retrying in the middle of the official battle counts as the day's loss,
+  // then starts a practice rematch with the same team.
   await page.clock.setFixedTime(at(DAY3));
   await page.reload();
   await page.click('#play');
   await attach(page);
+  const team3 = JSON.stringify(readParty((await getStatus(page)).mem).party.map((m) => m.species));
   await startRedBattle(page);
   await sleep(1000);
-  await page.reload();
-  await sleep(1000);
+  check(await page.locator('#retry-team').isVisible(), 'Retry team appears during the official daily battle');
+  await page.click('#retry-team');
+  await attach(page);
+  check((await page.evaluate(() => window.dailyRed.run?.kind)) === 'retry', 'mid-battle Retry switches into a practice rematch');
+  check(JSON.stringify(readParty((await getStatus(page)).mem).party.map((m) => m.species)) === team3, 'mid-battle Retry keeps the same team');
+  check((await saved(page))?.losses === 2, 'starting a retry mid-battle locks the official attempt in as a loss');
+  await startRedBattle(page);
+  await forceWin(page);
+  check(await finishToTitle(page, 'site-retry-midbattle'), 'mid-battle retry practice also returns to the title card');
   s = await shown(page);
-  check(s.losses === '2' && s.dayStreak === '3' && !s.canPlay && s.played === 'RED won today.', `leaving mid-battle counts as a loss (${statLine(s)})`);
+  check(s.losses === '2' && s.dayStreak === '3' && !s.canPlay && s.played === 'RED won today.', `retrying mid-battle still locks the day as a loss (${statLine(s)})`);
 
   // Day 5: a missed day resets the streaks.
   await page.clock.setFixedTime(at(DAY5));
@@ -181,6 +207,9 @@ try {
   await phone.click('#play');
   await attach(phone);
   await sleep(1500);
+  check(await phone.locator('#fast-forward').isVisible(), 'fast-forward has a touchable toolbar button on a phone');
+  await phone.click('#fast-forward');
+  check(await phone.evaluate(() => window.dailyRed.fastForward), 'phone fast-forward button toggles the emulator');
   const startY = (await getStatus(phone)).y;
   const dpad = await phone.locator('.dpad').boundingBox();
   await phone.mouse.move(dpad.x + dpad.width / 2, dpad.y + 10); // top arm of the d-pad
@@ -192,6 +221,36 @@ try {
   check(endY < startY, `touch d-pad moves the player (y ${startY} -> ${endY})`);
   await phone.screenshot({ path: `${OUT}/site-phone-playing.png` });
   await phoneContext.close();
+
+  // Infinite mode: separate stats, fresh seed each run, fast-forward controls.
+  const infiniteContext = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const infinitePage = await infiniteContext.newPage();
+  await infinitePage.goto(server.url);
+  await sleep(1000);
+  await infinitePage.click('#mode-infinite');
+  s = await shown(infinitePage);
+  check(s.canPlay && s.playText === 'Start infinite mode', 'Infinite mode swaps in its own primary action');
+  check(/Infinite mode/.test(s.note), 'Infinite mode explains that it has separate stats');
+  await infinitePage.click('#play');
+  await attach(infinitePage);
+  const infiniteSeed1 = await infinitePage.evaluate(() => window.dailyRed.run?.seed);
+  await infinitePage.click('#fast-forward');
+  check(await infinitePage.evaluate(() => window.dailyRed.fastForward), 'fast-forward button toggles on');
+  check((await infinitePage.evaluate(() => window.dailyRed.commands.at(-1))) === 'FAST_FORWARD', 'fast-forward button sends RetroArch FAST_FORWARD');
+  await infinitePage.keyboard.press('f');
+  check(!(await infinitePage.evaluate(() => window.dailyRed.fastForward)), 'keyboard shortcut F toggles fast-forward off');
+  await startRedBattle(infinitePage);
+  await forceWebsiteResult(infinitePage, { phase: 2, result: 1 });
+  check(await finishToTitle(infinitePage, 'site-infinite-win'), 'Infinite mode returns to the title card after a run');
+  const inf = await savedInfinite(infinitePage);
+  check(inf?.wins === 1 && inf?.losses === 0 && inf?.winStreak === 1 && inf?.bestStreak === 1, 'Infinite mode saves separate stats');
+  const dailyAfterInfinite = await saved(infinitePage);
+  check((dailyAfterInfinite?.wins || 0) === 0 && (dailyAfterInfinite?.losses || 0) === 0, 'Infinite mode does not affect daily stats in a fresh browser');
+  await infinitePage.click('#play');
+  await attach(infinitePage);
+  const infiniteSeed2 = await infinitePage.evaluate(() => window.dailyRed.run?.seed);
+  check(infiniteSeed2 !== infiniteSeed1, 'Infinite mode starts the next run with a fresh random seed');
+  await infiniteContext.close();
 
   // A failed download shows the error card, and Try again recovers.
   const brokenContext = await browser.newContext();

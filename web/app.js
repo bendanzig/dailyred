@@ -1,15 +1,20 @@
-// Website controller: the daily title card (RED, your stats, Play), the
-// emulator, and the toolbar and touch controls. All game behaviour lives in the
-// ROM; this file starts it with the day's seed, watches for the result, and
-// keeps the stats (see daily.js).
+// Website controller: the title card, the emulator, the daily/infinite stats,
+// and the desktop/mobile controls. The ROM still owns all gameplay.
 import { Nostalgist } from './vendor/nostalgist.js';
 import { loadGameFiles } from './game-files.js';
 import { injectConfig, parseSeed } from './rom-config.js';
 import { createGameLink, PHASE, RESULT } from './game-link.js';
 import {
-  today, dailySeed, msUntilTomorrow, loadStats, resultFor, currentStreaks,
+  today, dailySeed, msUntilTomorrow,
+  loadStats, loadInfiniteStats,
+  resultFor, currentStreaks,
   markBattleStarted, recordResult, settleAbandonedGame,
+  markInfiniteBattleStarted, recordInfiniteResult, settleAbandonedInfinite,
 } from './daily.js';
+
+const MODE = { DAILY: 'daily', INFINITE: 'infinite' };
+const RUN = { DAILY: 'daily', RETRY: 'retry', INFINITE: 'infinite', PRACTICE: 'practice' };
+const FAST_FORWARD_RATE = 3;
 
 const $ = (id) => document.getElementById(id);
 const app = document.querySelector('.app');
@@ -17,16 +22,26 @@ const screen = $('screen');
 const ui = {
   play: $('play'),
   retry: $('retry'),
+  retryToday: $('retry-today'),
+  retryTeam: $('retry-team'),
   sound: $('sound'),
   fullscreen: $('fullscreen'),
+  fastForward: $('fast-forward'),
+  modeSwitch: $('mode-switch'),
+  modeDaily: $('mode-daily'),
+  modeInfinite: $('mode-infinite'),
   wins: $('stat-wins'),
   losses: $('stat-losses'),
   winStreak: $('stat-win-streak'),
   dayStreak: $('stat-day-streak'),
+  winsLabel: $('label-wins'),
+  lossesLabel: $('label-losses'),
+  winStreakLabel: $('label-win-streak'),
+  dayStreakLabel: $('label-day-streak'),
   played: $('played'),
   playedResult: $('played-result'),
   playedNext: $('played-next'),
-  practiceNote: $('practice-note'),
+  note: $('practice-note'),
   loadingText: $('loading-text'),
   loadingDetail: $('loading-detail'),
   meter: $('meter'),
@@ -39,19 +54,25 @@ const session = {
   set(key, value) { try { sessionStorage.setItem(key, value); } catch { /* not remembered */ } },
 };
 
-// ?seed=123 starts a practice run with that team, for testing: results
-// aren't saved, there's no daily limit, and the game keeps dealing new teams.
+// ?seed=123 starts a practice run with that team, for testing: results aren't
+// saved, there's no daily limit, and the game keeps dealing new teams.
 const practiceSeed = parseSeed(new URLSearchParams(location.search).get('seed'));
 
-let stats = settleAbandonedGame(loadStats());
+let dailyStats = settleAbandonedGame(loadStats());
+let infiniteStats = settleAbandonedInfinite(loadInfiniteStats());
+let selectedMode = practiceSeed ? MODE.DAILY : (session.get('dailyred-mode') === MODE.INFINITE ? MODE.INFINITE : MODE.DAILY);
 let emu = null;
 let readGame = null;
 let pollTimer = null;
-let runDate = null;
-let battleSeen = false;
+let activeRun = null;
+let attemptStarted = false;
+let attemptRecorded = false;
+let lastPhase = PHASE.EXPLORING;
 let muted = session.get('dailyred-muted') === '1';
+let fastForward = false;
 let starting = false;
 let titleDate = null;
+const commandLog = [];
 
 // RetroArch opens a Web Audio context for each emulator and never closes it,
 // so a restart would leave one running (and browsers cap how many a page can
@@ -71,24 +92,85 @@ function setState(state) {
   app.dataset.state = state;
   const playing = state === 'playing';
   ui.sound.disabled = !playing;
+  ui.fastForward.disabled = !playing;
   ui.fullscreen.disabled = !playing || !document.fullscreenEnabled;
+  updatePlayingButtons();
 }
 
-// --- Title card ------------------------------------------------------------------
+function setNote(text = '') {
+  ui.note.hidden = !text;
+  ui.note.textContent = text;
+}
+
+function setMode(mode) {
+  if (practiceSeed) return;
+  selectedMode = mode;
+  session.set('dailyred-mode', mode);
+  renderTitle();
+}
+
+function renderStats(labels, values) {
+  ui.winsLabel.textContent = labels.wins;
+  ui.lossesLabel.textContent = labels.losses;
+  ui.winStreakLabel.textContent = labels.winStreak;
+  ui.dayStreakLabel.textContent = labels.dayStreak;
+  ui.wins.textContent = values.wins;
+  ui.losses.textContent = values.losses;
+  ui.winStreak.textContent = values.winStreak;
+  ui.dayStreak.textContent = values.dayStreak;
+}
 
 function renderTitle() {
   titleDate = today();
-  const { winStreak, dayStreak } = currentStreaks(stats, titleDate);
-  ui.wins.textContent = stats.wins;
-  ui.losses.textContent = stats.losses;
-  ui.winStreak.textContent = winStreak;
-  ui.dayStreak.textContent = dayStreak;
+  ui.modeSwitch.hidden = Boolean(practiceSeed);
+  ui.modeDaily.setAttribute('aria-pressed', String(selectedMode === MODE.DAILY));
+  ui.modeInfinite.setAttribute('aria-pressed', String(selectedMode === MODE.INFINITE));
 
-  const result = practiceSeed ? null : resultFor(stats, titleDate);
+  if (practiceSeed) {
+    const { winStreak, dayStreak } = currentStreaks(dailyStats, titleDate);
+    renderStats(
+      { wins: 'Wins', losses: 'Losses', winStreak: 'Win streak', dayStreak: 'Day streak' },
+      { wins: dailyStats.wins, losses: dailyStats.losses, winStreak, dayStreak },
+    );
+    ui.play.hidden = false;
+    ui.play.textContent = 'Start practice run';
+    ui.played.hidden = true;
+    ui.retryToday.hidden = true;
+    setNote("Practice run: results aren't saved.");
+    return;
+  }
+
+  if (selectedMode === MODE.INFINITE) {
+    renderStats(
+      { wins: 'Wins', losses: 'Losses', winStreak: 'Win streak', dayStreak: 'Best streak' },
+      {
+        wins: infiniteStats.wins,
+        losses: infiniteStats.losses,
+        winStreak: infiniteStats.winStreak,
+        dayStreak: infiniteStats.bestStreak,
+      },
+    );
+    ui.play.hidden = false;
+    ui.play.textContent = 'Start infinite mode';
+    ui.played.hidden = true;
+    ui.retryToday.hidden = true;
+    setNote('Infinite mode: one battle per run, a fresh random team every time. Daily stats stay untouched.');
+    return;
+  }
+
+  const { winStreak, dayStreak } = currentStreaks(dailyStats, titleDate);
+  renderStats(
+    { wins: 'Wins', losses: 'Losses', winStreak: 'Win streak', dayStreak: 'Day streak' },
+    { wins: dailyStats.wins, losses: dailyStats.losses, winStreak, dayStreak },
+  );
+
+  const result = resultFor(dailyStats, titleDate);
   ui.play.hidden = Boolean(result);
+  ui.play.textContent = 'Play';
   ui.played.hidden = !result;
-  ui.practiceNote.hidden = !practiceSeed;
+  ui.retryToday.hidden = result !== 'lost';
   if (result) ui.playedResult.textContent = result === 'won' ? 'You beat RED today!' : 'RED won today.';
+  setNote(result === 'lost' ? "Retry uses today's team as practice. Daily stats stay locked to your first started attempt." : '');
   updateCountdown();
 }
 
@@ -99,6 +181,7 @@ function formatTime(ms) {
 }
 
 function updateCountdown() {
+  if (practiceSeed || selectedMode !== MODE.DAILY) return;
   // At midnight a new battle unlocks: redraw the card.
   if (titleDate !== today()) {
     renderTitle();
@@ -120,10 +203,56 @@ function checkBrowser() {
   }
 }
 
+function randomSeed() {
+  try {
+    const values = new Uint32Array(1);
+    crypto.getRandomValues(values);
+    return values[0] || 1;
+  } catch {
+    return ((Math.random() * 0x100000000) >>> 0) || 1;
+  }
+}
+
+function sendCommand(command) {
+  if (!emu) return;
+  commandLog.push(command);
+  emu.sendCommand(command);
+}
+
+function showMuted() {
+  ui.sound.textContent = muted ? 'Unmute' : 'Mute';
+  ui.sound.setAttribute('aria-pressed', String(muted));
+}
+
+function showFastForward() {
+  ui.fastForward.textContent = fastForward ? `Fast forward ${FAST_FORWARD_RATE}x: On` : `Fast forward ${FAST_FORWARD_RATE}x`;
+  ui.fastForward.setAttribute('aria-pressed', String(fastForward));
+}
+
+function canRetryActiveRun() {
+  if (!activeRun) return false;
+  if (activeRun.kind === RUN.RETRY) return true;
+  if (activeRun.kind !== RUN.DAILY || !attemptStarted) return false;
+  return resultFor(dailyStats, activeRun.date) !== 'won';
+}
+
+function updatePlayingButtons() {
+  const playing = app.dataset.state === 'playing';
+  ui.retryTeam.hidden = !playing || !canRetryActiveRun();
+  ui.retryTeam.disabled = !playing || !canRetryActiveRun();
+  ui.fastForward.hidden = !playing;
+}
+
 function stopEmulator() {
   clearInterval(pollTimer);
   pollTimer = null;
   readGame = null;
+  activeRun = null;
+  attemptStarted = false;
+  attemptRecorded = false;
+  lastPhase = PHASE.EXPLORING;
+  fastForward = false;
+  commandLog.length = 0;
   if (emu) {
     try {
       emu.exit();
@@ -133,9 +262,41 @@ function stopEmulator() {
     emu = null;
   }
   for (const ctx of audioContexts.splice(0)) ctx.close().catch(() => {});
+  showFastForward();
+  updatePlayingButtons();
 }
 
-async function startRun() {
+function makeRun(kind) {
+  const date = today();
+  switch (kind) {
+    case RUN.PRACTICE:
+      return { kind, seed: practiceSeed, date, inject: { seed: practiceSeed } };
+    case RUN.RETRY:
+      return { kind, seed: dailySeed(date), date, inject: { seed: dailySeed(date) } };
+    case RUN.INFINITE: {
+      const seed = randomSeed();
+      return { kind, seed, date, inject: { seed } };
+    }
+    case RUN.DAILY:
+    default:
+      {
+        const seed = dailySeed(date);
+        return {
+          kind: RUN.DAILY,
+          seed,
+          date,
+          inject: {
+            seed,
+            wins: dailyStats.wins,
+            battles: dailyStats.wins + dailyStats.losses,
+            daily: true,
+          },
+        };
+      }
+  }
+}
+
+async function startRun(kind) {
   if (starting) return;
   starting = true;
   try {
@@ -149,17 +310,14 @@ async function startRun() {
       ui.loadingDetail.textContent = total ? `${megabytes(loaded)} of ${megabytes(total)} MB` : `${megabytes(loaded)} MB`;
     });
 
-    runDate = today();
-    stats = loadStats(); // another tab may have played meanwhile
-    if (!practiceSeed && resultFor(stats, runDate)) {
+    dailyStats = settleAbandonedGame(loadStats());
+    infiniteStats = settleAbandonedInfinite(loadInfiniteStats());
+    const run = makeRun(kind);
+    if (run.kind === RUN.DAILY && resultFor(dailyStats, run.date)) {
       renderTitle();
       setState('title');
       return;
     }
-    const seed = practiceSeed ?? dailySeed(runDate);
-    const rom = practiceSeed
-      ? injectConfig(files.rom, { seed })
-      : injectConfig(files.rom, { seed, wins: stats.wins, battles: stats.wins + stats.losses, daily: true });
 
     ui.loadingText.textContent = 'Starting the emulator';
     ui.loadingDetail.textContent = '';
@@ -172,11 +330,12 @@ async function startRun() {
       core: 'mgba',
       element: canvas,
       size: { width: 720, height: 480 }, // render at 3x; CSS scales it to fit
-      rom: { fileName: 'dailyred.gba', fileContent: new Blob([rom]) },
+      rom: { fileName: 'dailyred.gba', fileContent: new Blob([injectConfig(files.rom, run.inject)]) },
       resolveCoreJs: () => files.coreJs,
       resolveCoreWasm: () => files.coreWasm,
       retroarchConfig: {
         audio_mute_enable: muted,
+        fastforward_ratio: FAST_FORWARD_RATE,
         // The site never makes save states itself; uncompressed ones let the
         // debugging tools in tests/ read the game's RAM.
         savestate_file_compression: false,
@@ -184,8 +343,13 @@ async function startRun() {
       },
     });
 
-    readGame = createGameLink(emu, seed);
-    battleSeen = false;
+    activeRun = run;
+    readGame = createGameLink(emu, run.seed);
+    attemptStarted = false;
+    attemptRecorded = false;
+    lastPhase = PHASE.EXPLORING;
+    fastForward = false;
+    showFastForward();
     pollTimer = setInterval(watchGame, 500);
     setState('playing');
   } catch (err) {
@@ -200,31 +364,7 @@ async function startRun() {
   }
 }
 
-// Follows the daily battle: once it starts the day counts as played, the
-// result goes into the stats as soon as it's known, and when the game has
-// finished its closing messages we go back to the title card.
-function watchGame() {
-  let status;
-  try {
-    status = readGame?.();
-  } catch {
-    return;
-  }
-  if (!status || practiceSeed) return;
-  if (status.phase >= PHASE.BATTLE) {
-    battleSeen = true;
-    markBattleStarted(stats, runDate);
-  } else if (battleSeen && status.result === RESULT.NONE) {
-    // The game restarted mid-battle: that's a loss, like leaving the page.
-    recordResult(stats, runDate, false);
-    endDailyGame(0);
-    return;
-  }
-  if (status.result !== RESULT.NONE) recordResult(stats, runDate, status.result === RESULT.WON);
-  if (status.phase === PHASE.FINISHED) endDailyGame(1000);
-}
-
-function endDailyGame(delayMs) {
+function endRun(delayMs) {
   clearInterval(pollTimer);
   pollTimer = null;
   setTimeout(() => {
@@ -232,6 +372,95 @@ function endDailyGame(delayMs) {
     renderTitle();
     setState('title');
   }, delayMs);
+}
+
+function recordAbandonedAttempt() {
+  if (!activeRun || attemptRecorded || !attemptStarted) return;
+  attemptRecorded = true;
+  if (activeRun.kind === RUN.DAILY) {
+    recordResult(dailyStats, activeRun.date, false);
+    endRun(0);
+  } else if (activeRun.kind === RUN.INFINITE) {
+    recordInfiniteResult(infiniteStats, false);
+    endRun(0);
+  }
+}
+
+// Follows the game's status block. Daily mode returns to the title screen once
+// the official result is final; Retry and Infinite also return to the title so
+// the site can show their updated rules/stats between runs.
+function watchGame() {
+  let status;
+  try {
+    status = readGame?.();
+  } catch {
+    return;
+  }
+  if (!status || !activeRun) return;
+
+  if (status.phase >= PHASE.BATTLE && !attemptStarted) {
+    attemptStarted = true;
+    if (activeRun.kind === RUN.DAILY) markBattleStarted(dailyStats, activeRun.date);
+    if (activeRun.kind === RUN.INFINITE) markInfiniteBattleStarted(infiniteStats);
+    updatePlayingButtons();
+  } else if (attemptStarted && !attemptRecorded && lastPhase >= PHASE.BATTLE && status.phase < PHASE.BATTLE && status.result === RESULT.NONE) {
+    recordAbandonedAttempt();
+    lastPhase = status.phase;
+    return;
+  }
+
+  if (!attemptRecorded && status.result !== RESULT.NONE) {
+    attemptRecorded = true;
+    const won = status.result === RESULT.WON;
+    if (activeRun.kind === RUN.DAILY) recordResult(dailyStats, activeRun.date, won);
+    if (activeRun.kind === RUN.INFINITE) recordInfiniteResult(infiniteStats, won);
+    if (activeRun.kind === RUN.RETRY || activeRun.kind === RUN.INFINITE) {
+      endRun(1000);
+      lastPhase = status.phase;
+      return;
+    }
+  }
+
+  if (activeRun.kind === RUN.DAILY && status.phase === PHASE.FINISHED) {
+    endRun(1000);
+    lastPhase = status.phase;
+    return;
+  }
+
+  if (activeRun.kind === RUN.PRACTICE && attemptRecorded && status.phase === PHASE.EXPLORING && lastPhase >= PHASE.RESULT) {
+    attemptStarted = false;
+    attemptRecorded = false;
+  }
+
+  lastPhase = status.phase;
+}
+
+function startPrimaryRun() {
+  if (practiceSeed) startRun(RUN.PRACTICE);
+  else if (selectedMode === MODE.INFINITE) startRun(RUN.INFINITE);
+  else startRun(RUN.DAILY);
+}
+
+function retryToday() {
+  selectedMode = MODE.DAILY;
+  session.set('dailyred-mode', MODE.DAILY);
+  startRun(RUN.RETRY);
+}
+
+function retryCurrentRun() {
+  if (!activeRun) return;
+  if (activeRun.kind === RUN.DAILY && attemptStarted && !attemptRecorded) {
+    recordResult(dailyStats, activeRun.date, false);
+    attemptRecorded = true;
+  }
+  startRun(RUN.RETRY);
+}
+
+function toggleFastForward() {
+  if (!emu) return;
+  sendCommand('FAST_FORWARD');
+  fastForward = !fastForward;
+  showFastForward();
 }
 
 // --- Toolbar ---------------------------------------------------------------------
@@ -245,26 +474,28 @@ function onClick(button, handler) {
   });
 }
 
-onClick(ui.play, startRun);
-onClick(ui.retry, startRun);
+onClick(ui.play, startPrimaryRun);
+onClick(ui.retry, startPrimaryRun);
+onClick(ui.retryToday, retryToday);
+onClick(ui.retryTeam, retryCurrentRun);
 
 onClick(ui.sound, () => {
   if (!emu) return;
-  emu.sendCommand('MUTE');
+  sendCommand('MUTE');
   muted = !muted;
   session.set('dailyred-muted', muted ? '1' : '0');
   showMuted();
 });
 
-function showMuted() {
-  ui.sound.textContent = muted ? 'Unmute' : 'Mute';
-  ui.sound.setAttribute('aria-pressed', String(muted));
-}
+onClick(ui.fastForward, toggleFastForward);
 
 onClick(ui.fullscreen, () => {
   if (document.fullscreenElement) document.exitFullscreen();
   else $('console').requestFullscreen().catch(() => {});
 });
+
+onClick(ui.modeDaily, () => setMode(MODE.DAILY));
+onClick(ui.modeInfinite, () => setMode(MODE.INFINITE));
 
 document.addEventListener('fullscreenchange', () => {
   ui.fullscreen.textContent = document.fullscreenElement ? 'Exit full screen' : 'Full screen';
@@ -275,6 +506,10 @@ window.addEventListener('keydown', (event) => {
   if (app.dataset.state === 'playing' && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '].includes(event.key)) {
     event.preventDefault();
   }
+  if (app.dataset.state === 'playing' && !event.repeat && event.key.toLowerCase() === 'f') {
+    event.preventDefault();
+    toggleFastForward();
+  }
 });
 
 // Pause when the tab is hidden.
@@ -284,8 +519,8 @@ document.addEventListener('visibilitychange', () => {
   else emu.resume();
 });
 
-// Browsers start audio suspended unless it begins during a click; the
-// emulator starts after the download, so resume it on the next interaction.
+// Browsers start audio suspended unless it begins during a click; the emulator
+// starts after the download, so resume it on the next interaction.
 function resumeAudio() {
   for (const ctx of audioContexts) {
     if (ctx.state === 'suspended') ctx.resume().catch(() => {});
@@ -348,10 +583,14 @@ dpad.addEventListener('pointercancel', () => setDirection(null));
 // For debugging from the console and for the automated tests.
 window.dailyRed = {
   get emulator() { return emu; },
-  get stats() { return { ...stats }; },
+  get stats() { return { ...dailyStats, daily: { ...dailyStats }, infinite: { ...infiniteStats } }; },
+  get run() { return activeRun ? { ...activeRun } : null; },
+  get fastForward() { return fastForward; },
+  get commands() { return [...commandLog]; },
 };
 
 renderTitle();
 setState('title');
 showMuted();
+showFastForward();
 ui.fullscreen.hidden = !document.fullscreenEnabled; // e.g. iPhone Safari

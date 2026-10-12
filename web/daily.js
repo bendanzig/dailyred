@@ -1,9 +1,9 @@
-// The daily game and the player's stats, saved in this browser (localStorage).
-//
-// Everyone gets the same team on the same calendar day (in their own time
-// zone, like Wordle), and each browser gets one battle with RED per day.
+// The daily game and Infinite mode stats, saved in this browser
+// (localStorage). Daily mode stays date-locked like Wordle; Infinite mode is
+// separate and never touches the daily record.
 
-const STORAGE_KEY = 'dailyred-stats';
+const DAILY_STORAGE_KEY = 'dailyred-stats';
+const INFINITE_STORAGE_KEY = 'dailyred-infinite-stats';
 
 // A date in the player's time zone, e.g. "2026-10-11".
 export function today(now = new Date()) {
@@ -40,26 +40,37 @@ export function msUntilTomorrow(now = new Date()) {
 //   lastPlayed       date of the last finished battle, lastResult 'won'/'lost'
 //   pending          date of a battle that started but hasn't finished
 
-const EMPTY = { wins: 0, losses: 0, winStreak: 0, dayStreak: 0, lastPlayed: null, lastResult: null, pending: null };
+const EMPTY_DAILY = { wins: 0, losses: 0, winStreak: 0, dayStreak: 0, lastPlayed: null, lastResult: null, pending: null };
+const EMPTY_INFINITE = { wins: 0, losses: 0, winStreak: 0, bestStreak: 0, pending: false };
 
-let memoryCopy = null; // used when localStorage is blocked
+let memoryDaily = null;    // used when localStorage is blocked
+let memoryInfinite = null; // used when localStorage is blocked
 
-export function loadStats() {
+function load(storageKey, empty, memoryCopy) {
   try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-    return { ...EMPTY, ...saved };
+    const saved = JSON.parse(localStorage.getItem(storageKey));
+    return { ...empty, ...saved };
   } catch {
-    return { ...EMPTY, ...memoryCopy };
+    return { ...empty, ...memoryCopy };
   }
 }
 
-function save(stats) {
-  memoryCopy = { ...stats };
+function save(storageKey, stats) {
+  if (storageKey === DAILY_STORAGE_KEY) memoryDaily = { ...stats };
+  else memoryInfinite = { ...stats };
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(stats));
+    localStorage.setItem(storageKey, JSON.stringify(stats));
   } catch {
     // Storage blocked (e.g. some private modes): stats last until the page closes.
   }
+}
+
+export function loadStats() {
+  return load(DAILY_STORAGE_KEY, EMPTY_DAILY, memoryDaily);
+}
+
+export function loadInfiniteStats() {
+  return load(INFINITE_STORAGE_KEY, EMPTY_INFINITE, memoryInfinite);
 }
 
 // Today's result ('won' / 'lost'), or null if today's battle isn't done.
@@ -78,7 +89,7 @@ export function currentStreaks(stats, date) {
 export function markBattleStarted(stats, date) {
   if (stats.pending === date || resultFor(stats, date)) return;
   stats.pending = date;
-  save(stats);
+  save(DAILY_STORAGE_KEY, stats);
 }
 
 export function recordResult(stats, date, won) {
@@ -95,7 +106,7 @@ export function recordResult(stats, date, won) {
   stats.lastPlayed = date;
   stats.lastResult = won ? 'won' : 'lost';
   stats.pending = null;
-  save(stats);
+  save(DAILY_STORAGE_KEY, stats);
 }
 
 // A battle that started but never finished (tab closed, page reloaded) is a loss.
@@ -104,7 +115,28 @@ export function settleAbandonedGame(stats) {
     recordResult(stats, stats.pending, false);
   } else if (stats.pending) {
     stats.pending = null;
-    save(stats);
+    save(DAILY_STORAGE_KEY, stats);
   }
+  return stats;
+}
+
+export function markInfiniteBattleStarted(stats) {
+  if (stats.pending) return;
+  stats.pending = true;
+  save(INFINITE_STORAGE_KEY, stats);
+}
+
+export function recordInfiniteResult(stats, won) {
+  if (!stats.pending) return;
+  stats.wins += won ? 1 : 0;
+  stats.losses += won ? 0 : 1;
+  stats.winStreak = won ? stats.winStreak + 1 : 0;
+  stats.bestStreak = Math.max(stats.bestStreak, stats.winStreak);
+  stats.pending = false;
+  save(INFINITE_STORAGE_KEY, stats);
+}
+
+export function settleAbandonedInfinite(stats) {
+  if (stats.pending) recordInfiniteResult(stats, false);
   return stats;
 }

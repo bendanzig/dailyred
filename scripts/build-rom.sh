@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Builds the modified FireRed ROM with the project-local toolchain
-# (see scripts/setup-macos.sh) and puts a gzipped copy in web/game/ for the website.
+# (see scripts/setup-macos.sh or scripts/setup-linux.sh) and puts a gzipped
+# copy in web/game/ for the website.
 #
 #   scripts/build-rom.sh            # normal build
 #   scripts/build-rom.sh clean      # any extra args are passed to make
@@ -11,7 +12,7 @@ TC="$ROOT/.toolchain"
 GAME="$ROOT/pokefirered"
 
 if [ ! -x "$TC/arm-none-eabi/bin/arm-none-eabi-gcc" ]; then
-  echo "Toolchain missing. Run scripts/setup-macos.sh first."; exit 1
+  echo "Toolchain missing. Run scripts/setup-macos.sh or scripts/setup-linux.sh first."; exit 1
 fi
 
 # gbagfx asks pkg-config for libpng; clang also honours these variables,

@@ -136,6 +136,25 @@ a { color: inherit; text-underline-offset: 3px; }
 /* Title card: RED, the player's stats, then Play (or today's result). */
 .card-title { gap: 4.5cqh; padding: 4cqh; }
 
+.mode-switch {
+  position: relative;
+  display: flex;
+  gap: 10px;
+}
+
+.mode-button {
+  padding: max(8px, 2.1cqh) max(14px, 4cqh);
+  font-size: max(14px, 4.2cqh);
+  border-color: #8fa3b5;
+  color: #e6eef5;
+}
+
+.mode-button[aria-pressed="true"] {
+  color: #fff;
+  background: var(--crimson);
+  border-color: var(--crimson-deep);
+}
+
 .red-sprite {
   position: relative;
   height: 38cqh;
@@ -173,6 +192,11 @@ a { color: inherit; text-underline-offset: 3px; }
 .card-title .button-play {
   padding: max(10px, 2.6cqh) max(28px, 9cqh);
   font-size: max(18px, 6cqh);
+}
+
+.card-title .button-retry {
+  padding: max(9px, 2.2cqh) max(20px, 6.5cqh);
+  font-size: max(14px, 4.3cqh);
 }
 
 .played {
@@ -278,6 +302,10 @@ a { color: inherit; text-underline-offset: 3px; }
 }
 
 .button-quiet:not(:disabled):hover { border-color: var(--muted); }
+.button-quiet[aria-pressed="true"] {
+  border-color: var(--crimson-deep);
+  background: rgba(211, 32, 43, 0.12);
+}
 
 /* Touch controls (phones and tablets only) ---------------------------------- */
 

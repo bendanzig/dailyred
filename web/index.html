@@ -23,17 +23,22 @@
           <div class="card card-title">
             <div class="snow" aria-hidden="true"></div>
             <img class="red-sprite" src="game/red.png" width="64" height="64" alt="RED">
+          <div class="mode-switch" id="mode-switch" aria-label="Game mode">
+            <button class="button mode-button" id="mode-daily" type="button" aria-pressed="true">Daily</button>
+            <button class="button mode-button" id="mode-infinite" type="button" aria-pressed="false">Infinite</button>
+          </div>
             <dl class="stats">
-              <div><dt>Wins</dt><dd id="stat-wins">0</dd></div>
-              <div><dt>Losses</dt><dd id="stat-losses">0</dd></div>
-              <div><dt>Win streak</dt><dd id="stat-win-streak">0</dd></div>
-              <div><dt>Day streak</dt><dd id="stat-day-streak">0</dd></div>
+            <div><dt id="label-wins">Wins</dt><dd id="stat-wins">0</dd></div>
+            <div><dt id="label-losses">Losses</dt><dd id="stat-losses">0</dd></div>
+            <div><dt id="label-win-streak">Win streak</dt><dd id="stat-win-streak">0</dd></div>
+            <div><dt id="label-day-streak">Day streak</dt><dd id="stat-day-streak">0</dd></div>
             </dl>
             <button class="button button-play" id="play" type="button">Play</button>
             <div class="played" id="played" hidden>
               <p class="played-result" id="played-result"></p>
               <p class="played-next" id="played-next"></p>
             </div>
+          <button class="button button-play button-retry" id="retry-today" type="button" hidden>Retry today's team</button>
             <p class="card-note" id="practice-note" hidden>Practice run: results aren't saved.</p>
           </div>
           <div class="card card-loading" role="status" aria-live="polite">
@@ -50,6 +55,8 @@
       </div>
 
       <div class="toolbar">
+        <button class="button button-quiet" id="retry-team" type="button" hidden>Retry team</button>
+        <button class="button button-quiet" id="fast-forward" type="button" aria-pressed="false" disabled>Fast forward 3x</button>
         <button class="button button-quiet" id="sound" type="button" aria-pressed="false" disabled>Mute</button>
         <button class="button button-quiet" id="fullscreen" type="button" disabled>Full screen</button>
       </div>
@@ -81,12 +88,14 @@
         <div><dt><kbd>Z</kbd></dt><dd>B button: back, cancel</dd></div>
         <div><dt><kbd>Enter</kbd></dt><dd>Start: open the menu</dd></div>
         <div><dt><kbd>Right Shift</kbd></dt><dd>Select</dd></div>
+        <div><dt><kbd>F</kbd></dt><dd>Fast forward 3x toggle</dd></div>
       </dl>
-      <p class="guide-note">On a phone or tablet, use the buttons under the screen.</p>
+      <p class="guide-note">On a phone or tablet, use the buttons under the screen; Fast forward is the toolbar button.</p>
     </section>
 
     <footer class="footer">
       <p>Daily Red is a free, unofficial fan project. It isn't affiliated with or endorsed by Nintendo, Creatures Inc., GAME FREAK inc. or The Pokémon Company. Pokémon and all game content are © Nintendo, Creatures Inc. and GAME FREAK inc.</p>
+      <p>Based on <a href="https://github.com/amoi-builds/dailyred">amoi-builds/dailyred</a>.</p>
       <p><a href="licenses.txt">Licenses</a> · <a href="https://github.com/amoi-builds/dailyred">Source</a></p>
     </footer>
   </main>
