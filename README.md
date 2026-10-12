@@ -13,12 +13,14 @@ through the mGBA emulator compiled to WebAssembly. Nothing about battles is
 reimplemented in JavaScript.
 
 - [Quick start (macOS)](#quick-start-macos)
+- [Quick start (Linux / Vercel)](#quick-start-linux--vercel)
 - [How it works](#how-it-works)
 - [Team generation](#team-generation)
 - [RED's team](#reds-team)
 - [Development workflow](#development-workflow)
 - [Testing and debugging](#testing-and-debugging)
 - [Running it locally](#running-it-locally)
+- [Deploying to Vercel](#deploying-to-vercel)
 - [Copyright and licenses](#copyright-and-licenses)
 - [Known limitations](#known-limitations)
 
@@ -37,6 +39,21 @@ node scripts/serve.mjs      # open http://localhost:8080
 ```
 
 `setup-macos.sh` picks the right compiler for Intel or Apple Silicon Macs.
+
+## Quick start (Linux / Vercel)
+
+On Linux (including Vercel's build machines), use the Linux bootstrap script
+instead:
+
+```sh
+scripts/setup-linux.sh      # ARM cross-compiler + libpng into .toolchain/ (~1 GB, one time)
+scripts/get-pokefirered.sh  # pret/pokefirered at a pinned commit + patches/
+scripts/fetch-vendor.sh     # emulator, emulator core and font into web/vendor/
+scripts/build-rom.sh        # builds the ROM, writes web/game/dailyred.gba.gz
+node scripts/serve.mjs      # open http://localhost:8080
+```
+
+Vercel uses the same Linux path automatically through `scripts/vercel-build.sh`.
 
 ## How it works
 
@@ -334,6 +351,36 @@ saved in the browser for that address, so keep using the same port to keep
 your streaks. After rebuilding the ROM (`scripts/build-rom.sh`), reload the
 page.
 
+## Deploying to Vercel
+
+This fork can be imported into Vercel as a plain static site. The checked-in
+`vercel.json` tells Vercel to run:
+
+```sh
+bash scripts/vercel-build.sh
+```
+
+That build script:
+
+1. installs the Linux ARM toolchain into `.toolchain/`
+2. fetches `pret/pokefirered` at the pinned commit and applies `patches/`
+3. downloads the self-hosted web dependencies into `web/vendor/`
+4. builds the patched ROM and writes `web/game/dailyred.gba.gz`
+5. leaves the finished static site in `web/`
+
+### Exact Vercel settings
+
+If you import the repo normally, **no extra settings are required**. The
+repository already includes the needed config:
+
+- **Framework Preset:** Other / leave auto-detected
+- **Build Command:** `bash scripts/vercel-build.sh` (from `vercel.json`)
+- **Output Directory:** `web` (from `vercel.json`)
+- **Install Command:** none required
+- **Root Directory:** repository root
+
+If you prefer to enter them manually in the dashboard, use the same values.
+
 ## Copyright and licenses
 
 Daily Red is a free, unofficial fan project. It isn't affiliated with or
@@ -373,11 +420,13 @@ footer links to it.
 
 ```
 patches/pokefirered-dailyred.patch   all changes to pret/pokefirered
-scripts/setup-macos.sh               toolchain (xPack arm-none-eabi-gcc 14.2.1 + libpng)
+scripts/setup-macos.sh               macOS toolchain bootstrap
+scripts/setup-linux.sh               Linux/Vercel toolchain bootstrap
 scripts/get-pokefirered.sh           pinned upstream checkout + patch
 scripts/save-patch.sh                pokefirered/ changes → patches/
 scripts/build-rom.sh                 make modern → web/game/dailyred.gba.gz
 scripts/fetch-vendor.sh              Nostalgist, mGBA core, font (pinned, checksummed)
+scripts/vercel-build.sh              full static-site build for Vercel
 scripts/serve.mjs                    local static server
 web/                                 the website
 tests/                               headless browser tests and the teams tool
